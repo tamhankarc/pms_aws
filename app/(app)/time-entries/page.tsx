@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { getVisibleProjects } from "@/lib/queries";
 import { formatMinutes } from "@/lib/utils";
 import { canFullyModerateProject, isRoleScopedManager } from "@/lib/permissions";
+import { getAwsApiBaseUrl, getTimeEntriesFromAws, type AwsTimeEntryListItem } from "@/lib/aws-api";
 
 export default async function TimeEntriesPage({
   searchParams,
@@ -15,6 +16,7 @@ export default async function TimeEntriesPage({
   const user = await requireUser();
   const params = (await searchParams) ?? {};
   const showCreate = params.create === "1";
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
 
   const [projects, countries, supervisorEmployeeIds] = await Promise.all([
     getVisibleProjects(user),
@@ -22,44 +24,30 @@ export default async function TimeEntriesPage({
     (user.userType === "TEAM_LEAD" || isRoleScopedManager(user))
       ? db.employeeTeamLead.findMany({
           where: { teamLeadId: user.id },
-          include: {
-            employee: {
-              select: { id: true, functionalRole: true },
-            },
-          },
+          include: { employee: { select: { id: true, functionalRole: true } } },
         })
       : Promise.resolve([]),
   ]);
 
-  const visibleProjectIds = projects.map((project) => project.id);
-  const safeProjectIds = visibleProjectIds.length ? visibleProjectIds : ["__none__"];
   const scopedEmployeeIds = supervisorEmployeeIds
     .filter((row) => row.employee.functionalRole === user.functionalRole)
     .map((row) => row.employeeId);
 
-  const entries = await db.timeEntry.findMany({
-    where:
-      user.userType === "EMPLOYEE"
-        ? {
-            employeeId: user.id,
-            projectId: { in: safeProjectIds },
-          }
-        : user.userType === "TEAM_LEAD" || isRoleScopedManager(user)
-          ? {
-              employeeId: { in: scopedEmployeeIds.length ? scopedEmployeeIds : ["__none__"] },
-              projectId: { in: safeProjectIds },
-            }
-          : {
-              projectId: { in: safeProjectIds },
-            },
-    include: {
-      employee: true,
-      project: true,
-    },
-    orderBy: { createdAt: "desc" },
-    take: 50,
-  });
+  const entries = useAwsApi
+    ? (await getTimeEntriesFromAws()).items
+    : await db.timeEntry.findMany({
+        where:
+          user.userType === "EMPLOYEE"
+            ? { employeeId: user.id, projectId: { in: projects.length ? projects.map((project) => project.id) : ["__none__"] } }
+            : user.userType === "TEAM_LEAD" || isRoleScopedManager(user)
+              ? { employeeId: { in: scopedEmployeeIds.length ? scopedEmployeeIds : ["__none__"] }, projectId: { in: projects.length ? projects.map((project) => project.id) : ["__none__"] } }
+              : { projectId: { in: projects.length ? projects.map((project) => project.id) : ["__none__"] } },
+        include: { employee: true, project: true },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
 
+  const typedEntries = entries as Array<AwsTimeEntryListItem | Awaited<typeof entries>[number]>;
   const countryMap = new Map(countries.map((country) => [country.id, country.name]));
   const managedIds = new Set(scopedEmployeeIds);
   const canCreate = user.userType === "EMPLOYEE" || user.userType === "TEAM_LEAD" || isRoleScopedManager(user);
@@ -75,9 +63,7 @@ export default async function TimeEntriesPage({
         }
         actions={
           canCreate ? (
-            <Link className="btn-primary" href="/time-entries?create=1">
-              Add Time
-            </Link>
+            <Link className="btn-primary" href="/time-entries?create=1">Add Time</Link>
           ) : null
         }
       />
@@ -90,9 +76,7 @@ export default async function TimeEntriesPage({
               <label className="label">Project <span className="text-red-600">*</span></label>
               <select className="input" name="projectId" required>
                 {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
+                  <option key={project.id} value={project.id}>{project.name}</option>
                 ))}
               </select>
             </div>
@@ -102,9 +86,7 @@ export default async function TimeEntriesPage({
               <select className="input" name="countryId">
                 <option value="">No specific country</option>
                 {countries.map((country) => (
-                  <option key={country.id} value={country.id}>
-                    {country.name}
-                  </option>
+                  <option key={country.id} value={country.id}>{country.name}</option>
                 ))}
               </select>
             </div>
@@ -150,10 +132,8 @@ export default async function TimeEntriesPage({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {entries.map((entry) => {
-              const canEdit =
-                canFullyModerateProject(user) ||
-                ((user.userType === "TEAM_LEAD" || isRoleScopedManager(user)) && managedIds.has(entry.employeeId));
+            {typedEntries.map((entry) => {
+              const canEdit = canFullyModerateProject(user) || ((user.userType === "TEAM_LEAD" || isRoleScopedManager(user)) && managedIds.has(entry.employeeId));
 
               return (
                 <tr key={entry.id}>
@@ -164,22 +144,14 @@ export default async function TimeEntriesPage({
                   <td className="table-cell">
                     {entry.project.name}
                     <div className="text-xs text-slate-500">{entry.taskName}</div>
-                    <div className="text-xs text-slate-500">
-                      {entry.countryId ? countryMap.get(entry.countryId) ?? "—" : "No specific country"}
-                    </div>
+                    <div className="text-xs text-slate-500">{entry.countryId ? countryMap.get(entry.countryId) ?? "—" : "No specific country"}</div>
                   </td>
-                  <td className="table-cell">
-                    {new Date(entry.workDate).toLocaleDateString()}
-                  </td>
+                  <td className="table-cell">{new Date(entry.workDate).toLocaleDateString()}</td>
                   <td className="table-cell">{formatMinutes(entry.minutesSpent)}</td>
-                  <td className="table-cell">
-                    <span className="badge-slate">{entry.status}</span>
-                  </td>
+                  <td className="table-cell"><span className="badge-slate">{entry.status}</span></td>
                   <td className="table-cell">
                     {canEdit ? (
-                      <Link href={`/time-entries/${entry.id}`} className="text-sm font-medium text-blue-600 hover:underline">
-                        Edit
-                      </Link>
+                      <Link href={`/time-entries/${entry.id}`} className="text-sm font-medium text-blue-600 hover:underline">Edit</Link>
                     ) : (
                       <span className="text-xs text-slate-400">—</span>
                     )}
@@ -187,11 +159,9 @@ export default async function TimeEntriesPage({
                 </tr>
               );
             })}
-            {entries.length === 0 ? (
+            {typedEntries.length === 0 ? (
               <tr>
-                <td colSpan={5} className="table-cell text-center text-sm text-slate-500">
-                  No time entries found.
-                </td>
+                <td colSpan={6} className="table-cell text-center text-sm text-slate-500">No time entries found.</td>
               </tr>
             ) : null}
           </tbody>

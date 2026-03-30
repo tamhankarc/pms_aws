@@ -3,6 +3,7 @@ node_modules
 .vercel
 dist
 build
+backend
 coverage
 .env
 .env.local

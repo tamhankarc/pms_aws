@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/auth";
 import { getVisibleProjects } from "@/lib/queries";
 import { canCreateProjects } from "@/lib/permissions";
 import { toggleProjectStatusAction } from "@/lib/actions/project-actions";
+import { getAwsApiBaseUrl, getProjectsFromAws, type AwsProjectListItem } from "@/lib/aws-api";
 
 export default async function ProjectsPage({
   searchParams,
@@ -16,8 +17,17 @@ export default async function ProjectsPage({
   const status = params.status ?? "all";
   const billingModel = params.billingModel ?? "all";
 
-  const allProjects = await getVisibleProjects(user);
-  const projects = allProjects.filter((project) => {
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
+
+  const allProjects = useAwsApi
+    ? (await getProjectsFromAws()).items
+    : await getVisibleProjects(user);
+
+  const typedProjects = allProjects as Array<
+    AwsProjectListItem | Awaited<ReturnType<typeof getVisibleProjects>>[number]
+  >;
+
+  const projects = typedProjects.filter((project) => {
     const matchesQ =
       !q ||
       project.name.toLowerCase().includes(q) ||

@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { EmployeeGroupForm } from "@/components/forms/employee-group-form";
 import { createEmployeeGroupAction, toggleEmployeeGroupStatusAction } from "@/lib/actions/group-actions";
 import { db } from "@/lib/db";
+import { getAwsApiBaseUrl, getEmployeeGroupsFromAws, type AwsEmployeeGroupListItem } from "@/lib/aws-api";
 
 export default async function EmployeeGroupsPage({
   searchParams,
@@ -13,49 +14,35 @@ export default async function EmployeeGroupsPage({
   const q = params.q?.trim() ?? "";
   const status = params.status ?? "all";
   const showCreate = params.create === "1";
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
 
   const [groups, users] = await Promise.all([
-    db.employeeGroup.findMany({
-      where: {
-        ...(q
-          ? {
-              OR: [
-                { name: { contains: q } },
-                { description: { contains: q } },
-              ],
-            }
-          : {}),
-        ...(status === "active" ? { isActive: true } : {}),
-        ...(status === "inactive" ? { isActive: false } : {}),
-      },
-      include: {
-        users: { include: { user: true } },
-        projects: true,
-      },
-      orderBy: { name: "asc" },
-    }),
+    useAwsApi
+      ? getEmployeeGroupsFromAws({ q, status }).then((result) => result.items)
+      : db.employeeGroup.findMany({
+          where: {
+            ...(q ? { OR: [{ name: { contains: q } }, { description: { contains: q } }] } : {}),
+            ...(status === "active" ? { isActive: true } : {}),
+            ...(status === "inactive" ? { isActive: false } : {}),
+          },
+          include: { users: { include: { user: true } }, projects: true },
+          orderBy: { name: "asc" },
+        }),
     db.user.findMany({
-      where: {
-        isActive: true,
-        userType: {
-          in: ["EMPLOYEE", "TEAM_LEAD"],
-        },
-      },
+      where: { isActive: true, userType: { in: ["EMPLOYEE", "TEAM_LEAD"] } },
       orderBy: { fullName: "asc" },
       select: { id: true, fullName: true, email: true, userType: true },
     }),
   ]);
+
+  const typedGroups = groups as Array<AwsEmployeeGroupListItem | Awaited<typeof groups>[number]>;
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Employee groups"
         description="Admins, Managers, and Team Leads can define groups, assign operational users, and control project visibility."
-        actions={
-          <Link className="btn-primary" href="/employee-groups?create=1">
-            Create Group
-          </Link>
-        }
+        actions={<Link className="btn-primary" href="/employee-groups?create=1">Create Group</Link>}
       />
 
       <div className="card p-4">
@@ -70,9 +57,7 @@ export default async function EmployeeGroupsPage({
         </form>
       </div>
 
-      {showCreate ? (
-        <EmployeeGroupForm mode="create" users={users} action={createEmployeeGroupAction} />
-      ) : null}
+      {showCreate ? <EmployeeGroupForm mode="create" users={users} action={createEmployeeGroupAction} /> : null}
 
       <div className="table-wrap">
         <table className="table-base">
@@ -86,7 +71,7 @@ export default async function EmployeeGroupsPage({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {groups.map((group) => (
+            {typedGroups.map((group) => (
               <tr key={group.id}>
                 <td className="table-cell">
                   <div className="font-medium text-slate-900">{group.name}</div>
@@ -95,32 +80,24 @@ export default async function EmployeeGroupsPage({
                 <td className="table-cell">
                   {group.users.length > 0 ? group.users.map((row) => row.user.fullName).join(", ") : "—"}
                 </td>
-                <td className="table-cell">{group.projects.length}</td>
+                <td className="table-cell">{"projectsCount" in group ? group.projectsCount : group.projects.length}</td>
                 <td className="table-cell">
-                  <span className={group.isActive ? "badge-emerald" : "badge-slate"}>
-                    {group.isActive ? "Active" : "Inactive"}
-                  </span>
+                  <span className={group.isActive ? "badge-emerald" : "badge-slate"}>{group.isActive ? "Active" : "Inactive"}</span>
                 </td>
                 <td className="table-cell">
                   <div className="flex gap-2">
-                    <Link className="btn-secondary text-xs" href={`/employee-groups/${group.id}`}>
-                      Edit
-                    </Link>
+                    <Link className="btn-secondary text-xs" href={`/employee-groups/${group.id}`}>Edit</Link>
                     <form action={toggleEmployeeGroupStatusAction}>
                       <input type="hidden" name="groupId" value={group.id} />
-                      <button className="btn-secondary text-xs">
-                        {group.isActive ? "Deactivate" : "Activate"}
-                      </button>
+                      <button className="btn-secondary text-xs">{group.isActive ? "Deactivate" : "Activate"}</button>
                     </form>
                   </div>
                 </td>
               </tr>
             ))}
-            {groups.length === 0 ? (
+            {typedGroups.length === 0 ? (
               <tr>
-                <td colSpan={5} className="table-cell text-center text-sm text-slate-500">
-                  No employee groups found.
-                </td>
+                <td colSpan={5} className="table-cell text-center text-sm text-slate-500">No employee groups found.</td>
               </tr>
             ) : null}
           </tbody>

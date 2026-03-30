@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { createBillingTransactionAction } from "@/lib/actions/project-actions";
 import { db } from "@/lib/db";
 import { formatMinutes } from "@/lib/utils";
+import { getAwsApiBaseUrl, getProjectByIdFromAws, type AwsProjectDetail } from "@/lib/aws-api";
 
 export default async function ProjectDetailPage({
   params,
@@ -11,40 +12,46 @@ export default async function ProjectDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const project = await db.project.findUnique({
-    where: { id },
-    include: {
-      client: true,
-      movie: true,
-      countries: { include: { country: true } },
-      employeeGroups: { include: { employeeGroup: true } },
-      billingTransactions: { orderBy: { createdAt: "desc" } },
-      timeEntries: true,
-    },
-  });
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
+
+  const project = useAwsApi
+    ? (await getProjectByIdFromAws(id)).item
+    : await db.project.findUnique({
+        where: { id },
+        include: {
+          client: true,
+          movie: true,
+          countries: { include: { country: true } },
+          employeeGroups: { include: { employeeGroup: true } },
+          billingTransactions: { orderBy: { createdAt: "desc" } },
+          timeEntries: true,
+        },
+      });
 
   if (!project) notFound();
 
-  const approvedMinutes = project.timeEntries
+  const typedProject = project as AwsProjectDetail | NonNullable<Awaited<typeof project>>;
+
+  const approvedMinutes = typedProject.timeEntries
     .filter((entry) => entry.status === "APPROVED")
     .reduce((sum, entry) => sum + entry.minutesSpent, 0);
 
-  const approvedBillableMinutes = project.timeEntries
+  const approvedBillableMinutes = typedProject.timeEntries
     .filter((entry) => entry.status === "APPROVED" && entry.isBillable)
     .reduce((sum, entry) => sum + entry.minutesSpent, 0);
 
   const fixedHours =
-    project.billingModel === "FIXED_FULL"
-      ? Number(project.fixedContractHours ?? 0)
-      : Number(project.fixedMonthlyHours ?? 0);
+    typedProject.billingModel === "FIXED_FULL"
+      ? Number(typedProject.fixedContractHours ?? 0)
+      : Number(typedProject.fixedMonthlyHours ?? 0);
 
   return (
     <div>
       <PageHeader
-        title={project.name}
-        description={`${project.client.name} · ${project.billingModel.replaceAll("_", " ")} · ${project.movie?.title ?? "No movie linked"}`}
+        title={typedProject.name}
+        description={`${typedProject.client.name} · ${typedProject.billingModel.replaceAll("_", " ")} · ${typedProject.movie?.title ?? "No movie linked"}`}
         actions={
-          <Link className="btn-secondary" href={`/projects/${project.id}/edit`}>
+          <Link className="btn-secondary" href={`/projects/${typedProject.id}/edit`}>
             Edit project
           </Link>
         }
@@ -63,7 +70,7 @@ export default async function ProjectDetailPage({
             </div>
             <div className="card p-5">
               <p className="text-sm text-slate-500">
-                {project.billingModel === "FIXED_MONTHLY" ? "Included monthly hours" : "Fixed contract hours"}
+                {typedProject.billingModel === "FIXED_MONTHLY" ? "Included monthly hours" : "Fixed contract hours"}
               </p>
               <p className="mt-2 text-2xl font-semibold">{fixedHours || 0}</p>
             </div>
@@ -77,39 +84,39 @@ export default async function ProjectDetailPage({
             <dl className="mt-5 grid gap-4 md:grid-cols-2">
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Client</dt>
-                <dd className="mt-1 text-sm text-slate-800">{project.client.name}</dd>
+                <dd className="mt-1 text-sm text-slate-800">{typedProject.client.name}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Movie</dt>
-                <dd className="mt-1 text-sm text-slate-800">{project.movie?.title ?? "No movie linked"}</dd>
+                <dd className="mt-1 text-sm text-slate-800">{typedProject.movie?.title ?? "No movie linked"}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Countries</dt>
                 <dd className="mt-1 text-sm text-slate-800">
-                  {project.countries.map((c) => c.country.name).join(", ")}
+                  {typedProject.countries.map((c) => c.country.name).join(", ")}
                 </dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Employee groups</dt>
                 <dd className="mt-1 text-sm text-slate-800">
-                  {project.employeeGroups.map((g) => g.employeeGroup.name).join(", ") || "—"}
+                  {typedProject.employeeGroups.map((g) => g.employeeGroup.name).join(", ") || "—"}
                 </dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Billing model</dt>
-                <dd className="mt-1 text-sm text-slate-800">{project.billingModel.replaceAll("_", " ")}</dd>
+                <dd className="mt-1 text-sm text-slate-800">{typedProject.billingModel.replaceAll("_", " ")}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Project code</dt>
-                <dd className="mt-1 text-sm text-slate-800">{project.code || "—"}</dd>
+                <dd className="mt-1 text-sm text-slate-800">{typedProject.code || "—"}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Status</dt>
-                <dd className="mt-1 text-sm text-slate-800">{project.status.replaceAll("_", " ")}</dd>
+                <dd className="mt-1 text-sm text-slate-800">{typedProject.status.replaceAll("_", " ")}</dd>
               </div>
               <div>
                 <dt className="text-xs uppercase tracking-wide text-slate-500">Active</dt>
-                <dd className="mt-1 text-sm text-slate-800">{project.isActive ? "Yes" : "No"}</dd>
+                <dd className="mt-1 text-sm text-slate-800">{typedProject.isActive ? "Yes" : "No"}</dd>
               </div>
             </dl>
           </div>
@@ -132,18 +139,18 @@ export default async function ProjectDetailPage({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {project.billingTransactions.map((tx) => (
+                {typedProject.billingTransactions.map((tx) => (
                   <tr key={tx.id}>
                     <td className="table-cell">{tx.transactionType.replaceAll("_", " ")}</td>
                     <td className="table-cell">{tx.amountMoney == null ? "—" : Number(tx.amountMoney)}</td>
                     <td className="table-cell">{tx.amountHours == null ? "—" : Number(tx.amountHours)}</td>
                     <td className="table-cell">{tx.description || "—"}</td>
                     <td className="table-cell">
-                      {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(tx.createdAt)}
+                      {new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(tx.createdAt))}
                     </td>
                   </tr>
                 ))}
-                {project.billingTransactions.length === 0 ? (
+                {typedProject.billingTransactions.length === 0 ? (
                   <tr>
                     <td colSpan={5} className="table-cell text-slate-500">No transactions yet.</td>
                   </tr>
@@ -160,7 +167,7 @@ export default async function ProjectDetailPage({
           </p>
 
           <form action={createBillingTransactionAction} className="mt-5 space-y-4">
-            <input type="hidden" name="projectId" value={project.id} />
+            <input type="hidden" name="projectId" value={typedProject.id} />
             <div>
               <label className="label">Type <span className="text-red-600">*</span></label>
               <select className="input" name="type" required>

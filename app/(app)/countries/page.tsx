@@ -6,6 +6,7 @@ import { createCountryAction, toggleCountryStatusAction } from "@/lib/actions/co
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { canManageCountries } from "@/lib/permissions";
+import { getAwsApiBaseUrl, getCountriesFromAws, type AwsCountryListItem } from "@/lib/aws-api";
 
 export default async function CountriesPage({
   searchParams,
@@ -19,24 +20,50 @@ export default async function CountriesPage({
   const q = params.q?.trim() ?? "";
   const status = params.status ?? "all";
 
-  const countries = await db.country.findMany({
-    where: {
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q } },
-              { isoCode: { contains: q.toUpperCase() } },
-            ],
-          }
-        : {}),
-      ...(status === "active" ? { isActive: true } : {}),
-      ...(status === "inactive" ? { isActive: false } : {}),
-    },
-    include: {
-      projects: true,
-    },
-    orderBy: { name: "asc" },
-  });
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
+
+  const countries: Array<
+    | (AwsCountryListItem & { source: "aws" })
+    | {
+        id: string;
+        name: string;
+        isoCode: string | null;
+        isActive: boolean;
+        createdAt: Date;
+        projectCount: number;
+        source: "db";
+      }
+  > = useAwsApi
+    ? (await getCountriesFromAws({ q, status })).items.map((country) => ({
+        ...country,
+        source: "aws" as const,
+      }))
+    : (await db.country.findMany({
+        where: {
+          ...(q
+            ? {
+                OR: [
+                  { name: { contains: q } },
+                  { isoCode: { contains: q.toUpperCase() } },
+                ],
+              }
+            : {}),
+          ...(status === "active" ? { isActive: true } : {}),
+          ...(status === "inactive" ? { isActive: false } : {}),
+        },
+        include: {
+          projects: true,
+        },
+        orderBy: { name: "asc" },
+      })).map((country) => ({
+        id: country.id,
+        name: country.name,
+        isoCode: country.isoCode,
+        isActive: country.isActive,
+        createdAt: country.createdAt,
+        projectCount: country.projects.length,
+        source: "db" as const,
+      }));
 
   return (
     <div>
@@ -81,7 +108,7 @@ export default async function CountriesPage({
                     <div className="font-medium text-slate-900">{country.name}</div>
                   </td>
                   <td className="table-cell">{country.isoCode || "—"}</td>
-                  <td className="table-cell">{country.projects.length}</td>
+                  <td className="table-cell">{country.projectCount}</td>
                   <td className="table-cell">
                     <span className={country.isActive ? "badge-emerald" : "badge-slate"}>
                       {country.isActive ? "Active" : "Inactive"}

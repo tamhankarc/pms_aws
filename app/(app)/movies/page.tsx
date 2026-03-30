@@ -3,6 +3,13 @@ import { PageHeader } from "@/components/ui/page-header";
 import { db } from "@/lib/db";
 import { createMovieAction, toggleMovieStatusAction } from "@/lib/actions/movie-actions";
 import { MovieForm } from "@/components/forms/movie-form";
+import {
+  getAwsApiBaseUrl,
+  getClientsFromAws,
+  getMoviesFromAws,
+  type AwsClientListItem,
+  type AwsMovieListItem,
+} from "@/lib/aws-api";
 
 export default async function MoviesPage({
   searchParams,
@@ -14,29 +21,51 @@ export default async function MoviesPage({
   const status = params.status ?? "all";
   const clientId = params.clientId ?? "all";
 
-  const [clients, movies] = await Promise.all([
-    db.client.findMany({
-      where: { isActive: true },
-      orderBy: { name: "asc" },
-    }),
-    db.movie.findMany({
-      where: {
-        ...(q
-          ? {
-              OR: [
-                { title: { contains: q } },
-                { code: { contains: q } },
-              ],
-            }
-          : {}),
-        ...(status === "active" ? { isActive: true } : {}),
-        ...(status === "inactive" ? { isActive: false } : {}),
-        ...(clientId !== "all" ? { clientId } : {}),
-      },
-      include: { client: true },
-      orderBy: { title: "asc" },
-    }),
-  ]);
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
+
+  const [clients, movies] = useAwsApi
+    ? await Promise.all([
+        getClientsFromAws({ status: "active" }).then((result) => result.items),
+        getMoviesFromAws({ q, status, clientId: clientId === "all" ? "" : clientId }).then(
+          (result) => result.items,
+        ),
+      ])
+    : await Promise.all([
+        db.client.findMany({
+          where: { isActive: true },
+          orderBy: { name: "asc" },
+        }),
+        db.movie.findMany({
+          where: {
+            ...(q
+              ? {
+                  OR: [{ title: { contains: q } }, { code: { contains: q } }],
+                }
+              : {}),
+            ...(status === "active" ? { isActive: true } : {}),
+            ...(status === "inactive" ? { isActive: false } : {}),
+            ...(clientId !== "all" ? { clientId } : {}),
+          },
+          include: { client: true },
+          orderBy: { title: "asc" },
+        }),
+      ]);
+
+  const typedClients = clients as Array<
+    AwsClientListItem | { id: string; name: string; code: string | null; isActive: boolean }
+  >;
+  const typedMovies = movies as Array<
+    | AwsMovieListItem
+    | {
+        id: string;
+        title: string;
+        code: string | null;
+        description: string | null;
+        isActive: boolean;
+        clientId: string;
+        client: { id: string; name: string; code: string | null };
+      }
+  >;
 
   return (
     <div>
@@ -55,7 +84,7 @@ export default async function MoviesPage({
           </select>
           <select className="input" name="clientId" defaultValue={clientId}>
             <option value="all">All clients</option>
-            {clients.map((client) => (
+            {typedClients.map((client) => (
               <option key={client.id} value={client.id}>{client.name}</option>
             ))}
           </select>
@@ -76,7 +105,7 @@ export default async function MoviesPage({
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {movies.map((movie) => (
+              {typedMovies.map((movie) => (
                 <tr key={movie.id}>
                   <td className="table-cell">
                     <div className="font-medium text-slate-900">{movie.title}</div>
@@ -102,7 +131,7 @@ export default async function MoviesPage({
                   </td>
                 </tr>
               ))}
-              {movies.length === 0 ? (
+              {typedMovies.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="table-cell text-center text-sm text-slate-500">
                     No movies found.
@@ -114,7 +143,12 @@ export default async function MoviesPage({
         </div>
 
         <MovieForm
-          clients={clients}
+          clients={typedClients.map((client) => ({
+            id: client.id,
+            name: client.name,
+            code: client.code ?? null,
+            isActive: client.isActive,
+          }))}
           action={createMovieAction}
           title="Create movie"
           submitLabel="Create movie"

@@ -13,10 +13,11 @@ export async function loginAction(_state: unknown, formData: FormData) {
     if (!user) return { error: "Invalid credentials or inactive account." };
 
     await createSession(user);
-    redirect("/dashboard");
   } catch (error) {
     return { error: getErrorMessage(error, "Enter a valid username/email and password.") };
   }
+
+  redirect("/dashboard");
 }
 
 export async function logoutAction() {

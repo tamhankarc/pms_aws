@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { requireUserTypes } from "@/lib/auth";
+import { createProjectViaAws, getAwsApiBaseUrl, updateProjectViaAws } from "@/lib/aws-api";
 import {
   parseCreateBillingTransactionFormData,
   parseCreateProjectFormData,
@@ -29,7 +30,11 @@ export async function createProjectAction(
     const user = await requireUserTypes(["ADMIN", "MANAGER"]);
     const input = parseCreateProjectFormData(formData);
 
-    await createProject(user, input);
+    if (getAwsApiBaseUrl()) {
+      await createProjectViaAws(input);
+    } else {
+      await createProject(user, input);
+    }
 
     revalidatePath("/projects");
     revalidatePath("/projects/new");
@@ -48,7 +53,11 @@ export async function updateProjectAction(
     const user = await requireUserTypes(["ADMIN", "MANAGER"]);
     const input = parseUpdateProjectFormData(formData);
 
-    await updateProject(user, projectId, input);
+    if (getAwsApiBaseUrl()) {
+      await updateProjectViaAws(projectId, input);
+    } else {
+      await updateProject(user, projectId, input);
+    }
 
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);

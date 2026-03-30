@@ -2,6 +2,7 @@ import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { ClientForm } from "@/components/forms/client-form";
 import { createClientAction, toggleClientStatusAction } from "@/lib/actions/client-actions";
+import { getAwsApiBaseUrl, getClientsFromAws, type AwsClientListItem } from "@/lib/aws-api";
 import { db } from "@/lib/db";
 
 export default async function ClientsPage({
@@ -13,25 +14,50 @@ export default async function ClientsPage({
   const q = params.q?.trim() ?? "";
   const status = params.status ?? "all";
 
-  const clients = await db.client.findMany({
-    where: {
-      ...(q
-        ? {
-            OR: [
-              { name: { contains: q } },
-              { code: { contains: q } },
-            ],
-          }
-        : {}),
-      ...(status === "active" ? { isActive: true } : {}),
-      ...(status === "inactive" ? { isActive: false } : {}),
-    },
-    include: {
-      projects: true,
-      movies: true,
-    },
-    orderBy: { name: "asc" },
-  });
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
+
+  const clients: Array<
+    | (AwsClientListItem & { source: "aws" })
+    | {
+        id: string;
+        name: string;
+        code: string | null;
+        isActive: boolean;
+        createdAt: Date;
+        projectCount: number;
+        movieCount: number;
+        source: "db";
+      }
+  > = useAwsApi
+    ? (await getClientsFromAws({ q, status })).items.map((client) => ({
+        ...client,
+        source: "aws" as const,
+      }))
+    : (await db.client.findMany({
+        where: {
+          ...(q
+            ? {
+                OR: [{ name: { contains: q } }, { code: { contains: q } }],
+              }
+            : {}),
+          ...(status === "active" ? { isActive: true } : {}),
+          ...(status === "inactive" ? { isActive: false } : {}),
+        },
+        include: {
+          projects: true,
+          movies: true,
+        },
+        orderBy: { name: "asc" },
+      })).map((client) => ({
+        id: client.id,
+        name: client.name,
+        code: client.code,
+        isActive: client.isActive,
+        createdAt: client.createdAt,
+        projectCount: client.projects.length,
+        movieCount: client.movies.length,
+        source: "db" as const,
+      }));
 
   return (
     <div>
@@ -76,12 +102,12 @@ export default async function ClientsPage({
                   <td className="table-cell">
                     <div className="font-medium text-slate-900">{client.name}</div>
                     <div className="text-xs text-slate-500">
-                      Created {client.createdAt.toLocaleDateString()}
+                      Created {new Date(client.createdAt).toLocaleDateString()}
                     </div>
                   </td>
                   <td className="table-cell">{client.code || "—"}</td>
-                  <td className="table-cell">{client.projects.length}</td>
-                  <td className="table-cell">{client.movies.length}</td>
+                  <td className="table-cell">{client.projectCount}</td>
+                  <td className="table-cell">{client.movieCount}</td>
                   <td className="table-cell">
                     <span className={client.isActive ? "badge-emerald" : "badge-slate"}>
                       {client.isActive ? "Active" : "Inactive"}

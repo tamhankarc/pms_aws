@@ -5,6 +5,7 @@ import { canManageUsers } from "@/lib/permissions";
 import { UserManageForm } from "@/components/forms/user-manage-form";
 import { createUserAction, toggleUserStatusAction } from "@/lib/actions/user-actions";
 import { db } from "@/lib/db";
+import { getAwsApiBaseUrl, getUsersFromAws, type AwsUserListItem } from "@/lib/aws-api";
 
 type UserTypeFilter =
   | "all"
@@ -40,31 +41,34 @@ export default async function UsersPage({
   const status = params.status ?? "all";
   const userType = toUserTypeFilter(params.userType);
   const showCreate = params.create === "1";
+  const useAwsApi = Boolean(getAwsApiBaseUrl());
 
   const [users, supervisorRows, groups] = await Promise.all([
-    db.user.findMany({
-      where: {
-        ...(q
-          ? {
-              OR: [
-                { fullName: { contains: q } },
-                { username: { contains: q } },
-                { email: { contains: q } },
-                { designation: { contains: q } },
-                { employeeCode: { contains: q } },
-              ],
-            }
-          : {}),
-        ...(status === "active" ? { isActive: true } : {}),
-        ...(status === "inactive" ? { isActive: false } : {}),
-        ...(userType !== "all" ? { userType } : {}),
-      },
-      include: {
-        employeeGroups: { include: { employeeGroup: true } },
-        teamLeadAssignmentsAsEmployee: { include: { teamLead: true } },
-      },
-      orderBy: { createdAt: "desc" },
-    }),
+    useAwsApi
+      ? getUsersFromAws({ q, status, userType }).then((result) => result.items)
+      : db.user.findMany({
+          where: {
+            ...(q
+              ? {
+                  OR: [
+                    { fullName: { contains: q } },
+                    { username: { contains: q } },
+                    { email: { contains: q } },
+                    { designation: { contains: q } },
+                    { employeeCode: { contains: q } },
+                  ],
+                }
+              : {}),
+            ...(status === "active" ? { isActive: true } : {}),
+            ...(status === "inactive" ? { isActive: false } : {}),
+            ...(userType !== "all" ? { userType } : {}),
+          },
+          include: {
+            employeeGroups: { include: { employeeGroup: true } },
+            teamLeadAssignmentsAsEmployee: { include: { teamLead: true } },
+          },
+          orderBy: { createdAt: "desc" },
+        }),
     db.user.findMany({
       where: {
         isActive: true,
@@ -85,6 +89,8 @@ export default async function UsersPage({
       select: { id: true, name: true },
     }),
   ]);
+
+  const typedUsers = users as Array<AwsUserListItem | Awaited<typeof users>[number]>;
 
   const supervisors = supervisorRows
     .filter(
@@ -115,12 +121,7 @@ export default async function UsersPage({
 
       <div className="card p-4">
         <form className="grid gap-3 md:grid-cols-[1fr_180px_220px_auto]" method="get">
-          <input
-            className="input"
-            name="q"
-            defaultValue={q}
-            placeholder="Search by name, username, email, designation, or employee code"
-          />
+          <input className="input" name="q" defaultValue={q} placeholder="Search by name, username, email, designation, or employee code" />
           <select className="input" name="status" defaultValue={status}>
             <option value="all">All statuses</option>
             <option value="active">Active only</option>
@@ -135,19 +136,12 @@ export default async function UsersPage({
             <option value="REPORT_VIEWER">Report Viewer</option>
             <option value="ACCOUNTS">Accounts</option>
           </select>
-          <button className="btn-secondary" type="submit">
-            Apply
-          </button>
+          <button className="btn-secondary" type="submit">Apply</button>
         </form>
       </div>
 
       {showCreate && canManageUsers(currentUser) ? (
-        <UserManageForm
-          mode="create"
-          supervisors={supervisors}
-          groups={groups}
-          action={createUserAction}
-        />
+        <UserManageForm mode="create" supervisors={supervisors} groups={groups} action={createUserAction} />
       ) : null}
 
       <div className="table-wrap">
@@ -166,7 +160,7 @@ export default async function UsersPage({
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {users.map((user) => (
+            {typedUsers.map((user) => (
               <tr key={user.id}>
                 <td className="table-cell">
                   <div className="font-medium text-slate-900">{user.fullName}</div>
@@ -174,14 +168,10 @@ export default async function UsersPage({
                   <div className="text-xs text-slate-500">{user.email}</div>
                 </td>
                 <td className="table-cell">{user.userType.replaceAll("_", " ")}</td>
-                <td className="table-cell">
-                  {(user.functionalRole ?? "UNASSIGNED").replaceAll("_", " ")}
-                </td>
+                <td className="table-cell">{(user.functionalRole ?? "UNASSIGNED").replaceAll("_", " ")}</td>
                 <td className="table-cell">{user.employeeCode || "—"}</td>
                 <td className="table-cell">{user.designation || "—"}</td>
-                <td className="table-cell">
-                  {user.joiningDate ? new Date(user.joiningDate).toLocaleDateString() : "—"}
-                </td>
+                <td className="table-cell">{user.joiningDate ? new Date(user.joiningDate).toLocaleDateString() : "—"}</td>
                 <td className="table-cell">
                   {user.userType === "EMPLOYEE" ? (
                     <>
@@ -189,16 +179,11 @@ export default async function UsersPage({
                         Groups: {user.employeeGroups.map((g) => g.employeeGroup.name).join(", ") || "—"}
                       </div>
                       <div className="mt-1 text-xs text-slate-600">
-                        Supervisors:{" "}
-                        {user.teamLeadAssignmentsAsEmployee
-                          .map((t) => `${t.teamLead.fullName} (${t.teamLead.userType.replaceAll("_", " ")})`)
-                          .join(", ") || "—"}
+                        Supervisors: {user.teamLeadAssignmentsAsEmployee.map((t) => `${t.teamLead.fullName} (${t.teamLead.userType.replaceAll("_", " ")})`).join(", ") || "—"}
                       </div>
                     </>
                   ) : user.userType === "TEAM_LEAD" ? (
-                    <div className="text-xs text-slate-600">
-                      Groups: {user.employeeGroups.map((g) => g.employeeGroup.name).join(", ") || "—"}
-                    </div>
+                    <div className="text-xs text-slate-600">Groups: {user.employeeGroups.map((g) => g.employeeGroup.name).join(", ") || "—"}</div>
                   ) : user.userType === "ACCOUNTS" ? (
                     <div className="text-xs text-slate-600">No groups or supervisors</div>
                   ) : (
@@ -206,30 +191,22 @@ export default async function UsersPage({
                   )}
                 </td>
                 <td className="table-cell">
-                  <span className={user.isActive ? "badge-emerald" : "badge-slate"}>
-                    {user.isActive ? "Active" : "Inactive"}
-                  </span>
+                  <span className={user.isActive ? "badge-emerald" : "badge-slate"}>{user.isActive ? "Active" : "Inactive"}</span>
                 </td>
                 <td className="table-cell">
                   <div className="flex gap-2">
-                    <Link className="btn-secondary text-xs" href={`/users/${user.id}`}>
-                      Edit
-                    </Link>
+                    <Link className="btn-secondary text-xs" href={`/users/${user.id}`}>Edit</Link>
                     <form action={toggleUserStatusAction}>
                       <input type="hidden" name="userId" value={user.id} />
-                      <button className="btn-secondary text-xs">
-                        {user.isActive ? "Deactivate" : "Activate"}
-                      </button>
+                      <button className="btn-secondary text-xs">{user.isActive ? "Deactivate" : "Activate"}</button>
                     </form>
                   </div>
                 </td>
               </tr>
             ))}
-            {users.length === 0 ? (
+            {typedUsers.length === 0 ? (
               <tr>
-                <td colSpan={9} className="table-cell text-center text-sm text-slate-500">
-                  No users found.
-                </td>
+                <td colSpan={9} className="table-cell text-center text-sm text-slate-500">No users found.</td>
               </tr>
             ) : null}
           </tbody>

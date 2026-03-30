@@ -1,13 +1,11 @@
 import type { UserType } from "@prisma/client";
-import type { SessionUser } from "@/lib/auth";
 import type { CurrentUser } from "@/lib/auth-types";
 
 type UserLike =
-  | SessionUser
   | CurrentUser
   | {
       userType: UserType | CurrentUser["userType"];
-      functionalRole?: SessionUser["functionalRole"] | null;
+      functionalRole?: CurrentUser["functionalRole"] | null;
     }
   | UserType
   | null
