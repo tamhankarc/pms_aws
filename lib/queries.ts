@@ -1,0 +1,177 @@
+import "server-only";
+import { db } from "@/lib/db";
+import { canSeeAllProjects, canSeeBillingDashboard } from "@/lib/permissions";
+import type { SessionUser } from "@/lib/auth";
+import type { BillingModel } from "@prisma/client";
+
+export async function getVisibleProjects(user: SessionUser) {
+  const include = {
+    client: true,
+    movie: true,
+    countries: { include: { country: true } },
+    employeeGroups: { include: { employeeGroup: true } },
+  } as const;
+
+  if (canSeeAllProjects(user)) {
+    return db.project.findMany({
+      include,
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  return db.project.findMany({
+    where: {
+      employeeGroups: {
+        some: {
+          employeeGroup: {
+            users: {
+              some: {
+                userId: user.id,
+              },
+            },
+          },
+        },
+      },
+    },
+    include,
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export async function getDashboardStats(user: SessionUser) {
+  const visibleProjects = await getVisibleProjects(user);
+  const projectIds = visibleProjects.map((project) => project.id);
+  const targetIds = projectIds.length ? projectIds : ["__none__"];
+
+  const [approvedTime, approvedBillableTime, pendingEntries, pendingEstimates] =
+    await Promise.all([
+      db.timeEntry.aggregate({
+        _sum: { minutesSpent: true },
+        where: {
+          projectId: { in: targetIds },
+          status: "APPROVED",
+        },
+      }),
+      db.timeEntry.aggregate({
+        _sum: { minutesSpent: true },
+        where: {
+          projectId: { in: targetIds },
+          status: "APPROVED",
+          isBillable: true,
+        },
+      }),
+      db.timeEntry.count({
+        where: {
+          projectId: { in: targetIds },
+          status: "SUBMITTED",
+        },
+      }),
+      db.estimate.count({
+        where: {
+          projectId: { in: targetIds },
+          status: "SUBMITTED",
+        },
+      }),
+    ]);
+
+  return {
+    projects: visibleProjects.length,
+    approvedMinutes: approvedTime._sum.minutesSpent ?? 0,
+    approvedBillableMinutes: approvedBillableTime._sum.minutesSpent ?? 0,
+    pendingEntries,
+    pendingEstimates,
+  };
+}
+
+export async function getManagedEmployees(teamLeadId: string) {
+  return db.employeeTeamLead.findMany({
+    where: { teamLeadId },
+    include: {
+      employee: {
+        include: {
+          employeeGroups: { include: { employeeGroup: true } },
+        },
+      },
+    },
+    orderBy: { assignedAt: "desc" },
+  });
+}
+
+function getMonthRange(month: string) {
+  const [year, mon] = month.split("-").map(Number);
+  const start = new Date(Date.UTC(year, mon - 1, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(year, mon, 1, 0, 0, 0));
+  return { start, end };
+}
+
+export async function getBillingDashboardData(
+  user: SessionUser,
+  month: string,
+  selectedProjectId?: string,
+  selectedBillingModel?: BillingModel | "",
+) {
+  if (!canSeeBillingDashboard(user)) {
+    return {
+      rows: [] as Array<{
+        projectId: string;
+        projectName: string;
+        billingModel: BillingModel;
+        workedMinutes: number;
+        workedHours: string;
+      }>,
+      projectOptions: [] as Array<{ id: string; name: string; billingModel: BillingModel }>,
+    };
+  }
+
+  const { start, end } = getMonthRange(month);
+
+  const allProjects = await db.project.findMany({
+    select: {
+      id: true,
+      name: true,
+      billingModel: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  const filteredProjects = allProjects.filter((project) => {
+    const projectMatch = selectedProjectId ? project.id === selectedProjectId : true;
+    const billingMatch = selectedBillingModel ? project.billingModel === selectedBillingModel : true;
+    return projectMatch && billingMatch;
+  });
+
+  const filteredProjectIds = filteredProjects.map((project) => project.id);
+  const targetIds = filteredProjectIds.length ? filteredProjectIds : ["__none__"];
+
+  const grouped = await db.timeEntry.groupBy({
+    by: ["projectId"],
+    _sum: {
+      minutesSpent: true,
+    },
+    where: {
+      projectId: { in: targetIds },
+      workDate: {
+        gte: start,
+        lt: end,
+      },
+    },
+  });
+
+  const totals = new Map(grouped.map((row) => [row.projectId, row._sum.minutesSpent ?? 0]));
+
+  const rows = filteredProjects.map((project) => {
+    const workedMinutes = totals.get(project.id) ?? 0;
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      billingModel: project.billingModel,
+      workedMinutes,
+      workedHours: (workedMinutes / 60).toFixed(2),
+    };
+  });
+
+  return {
+    rows,
+    projectOptions: allProjects,
+  };
+}
